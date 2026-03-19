@@ -236,7 +236,9 @@ fn run_host() {
                     let mut buf = [0u8; 1024];
                     match client.stream.read(&mut buf) {
                         Ok(0) => {
+                            let msg = format!("{} left.", client.username);
                             println!("{} logout.", client.username);
+                            messages.push(msg);
                             disconnected.push(i);
                         }
                         Ok(n) => {
@@ -245,7 +247,9 @@ fn run_host() {
                                 continue;
                             }
                             if text == "logout" {
+                                let msg = format!("{} left.", client.username);
                                 println!("{} logout.", client.username);
+                                messages.push(msg);
                                 disconnected.push(i);
                             } else {
                                 let msg = format!("{}: {}", client.username, text);
@@ -255,6 +259,9 @@ fn run_host() {
                         }
                         Err(e) if e.kind() == ErrorKind::WouldBlock => {} // no message from this client
                         Err(_) => {
+                            let msg = format!("{} left.", client.username);
+                            println!("{}", client.username);
+                            messages.push(msg);
                             disconnected.push(i);
                         }
                     }
@@ -323,8 +330,9 @@ fn run_host() {
             Err(e) if e.kind() == ErrorKind::WouldBlock => {} // no new tcp client
             Err(e) => eprintln!("Error accepting TCP connection: {}", e),
         }
+
+        std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
     }
-    std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
 }
 
 // We need to set stdin to non-blocking mode so we can read user input without blocking the main loop
