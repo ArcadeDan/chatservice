@@ -1,3 +1,5 @@
+// Dan Sparks
+
 use std::{
     collections::HashMap,
     fs,
