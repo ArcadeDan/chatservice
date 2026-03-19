@@ -12,6 +12,8 @@ use std::{
 
 const PORT: u16 = 13952;
 const HOST: &str = "127.0.0.1";
+
+// We need a unified type to represent both Unix and TCP clients
 enum Client {
     Unix(UnixStream),
     Tcp(TcpStream),
@@ -42,38 +44,24 @@ impl Write for Client {
     }
 }
 
-impl Client {
-    fn try_clone(&self) -> std::io::Result<Client> {
-        match self {
-            Client::Unix(stream) => Ok(Client::Unix(stream.try_clone()?)),
-            Client::Tcp(stream) => Ok(Client::Tcp(stream.try_clone()?)),
-        }
-    }
-
-    fn print_usage() {
-        println!("Usage:");
-        println!("  - To connect as a client: socat - UNIX-CONNECT:/tmp/chatservice.sock");
-        println!("  - To connect via TCP: telnet {}:{}", HOST, PORT);
-    }
-}
-
 fn run_host() {
     // -- SETUP --
-
     let socket_path = "/tmp/chatservice.sock";
     let tcp_addr = format!("{}:{}", HOST, PORT);
 
     let _ = fs::remove_file(socket_path); // remove socket from last session
 
     // creates socket file and listens for incoming connections
-    let unix_listener = UnixListener::bind(socket_path).expect("Failed to bind to socket");
+    let unix_listener = UnixListener::bind(socket_path).expect("Failed to bind to socket"); // /tmp/chatservice.sock
     unix_listener
         .set_nonblocking(true)
         .expect("Failed to set non-blocking mode");
 
-    let tcp_listener = TcpListener::bind(&tcp_addr).expect("Failed to bind to TCP address");
+
+    // bind a TCP socket to 127.0.0.1:13952 and listen for incoming connections
+    let tcp_listener = TcpListener::bind(&tcp_addr).expect("Failed to bind to TCP address"); // 127.0.0.1:13952
     tcp_listener
-        .set_nonblocking(true)
+        .set_nonblocking(true) // we need non-blocking because we are handling for both UNIX and TCP listeners in the same loop
         .expect("Failed to set non-blocking mode");
 
     println!("Chat server listening on {} and {}", socket_path, tcp_addr);
@@ -83,12 +71,12 @@ fn run_host() {
     loop {
         // accept new connections
         match unix_listener.accept() {
-            Ok((stream, _addr)) => {
+            Ok((stream, _addr)) => { // if a client connects to the UNIX socket
                 println!("New client connected");
                 stream
                     .set_nonblocking(true)
                     .expect("Failed to set non-blocking mode");
-                clients.push(Client::Unix(stream));
+                clients.push(Client::Unix(stream)); // add the new client to our list of clients
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 // No new connections, continue to check existing clients
@@ -99,12 +87,12 @@ fn run_host() {
         }
 
         match tcp_listener.accept() {
-            Ok((stream, addr)) => {
+            Ok((stream, addr)) => { // if a client connects to the TCP socket
                 println!("New TCP client connected from: {}", addr);
                 stream
                     .set_nonblocking(true)
                     .expect("Failed to set non-blocking mode");
-                clients.push(Client::Tcp(stream));
+                clients.push(Client::Tcp(stream)); // add the new client to our list of clients
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 // No new connections, continue to check existing clients
@@ -115,24 +103,24 @@ fn run_host() {
         }
 
         // read messages from clients
-        let mut messages: Vec<String> = Vec::new();
-        let mut disconnected: Vec<usize> = Vec::new();
+        let mut messages: Vec<String> = Vec::new(); // collect all messages in an iteration
+        let mut disconnected: Vec<usize> = Vec::new(); // for removing disconnected clients after the loop
 
-        for (i, client) in clients.iter_mut().enumerate() {
-            let mut buf = [0u8; 1024];
+        for (i, client) in clients.iter_mut().enumerate() { // track index for removing disconnected clients later
+            let mut buf = [0u8; 1024]; // 1024 byte byte buffer
             match client.read(&mut buf) {
-                Ok(0) => {
+                Ok(0) => { // 0 bytes read means the client has disconnected and we mark it for removal
                     // Client disconnected
                     println!("Client disconnected");
                     disconnected.push(i);
                 }
-                Ok(_) => {
-                    let msg = String::from_utf8_lossy(&buf).trim().to_string();
+                Ok(n) => { // client sent data, we convert it to a string and add it to the list of messages to broadcast
+                    let msg = String::from_utf8_lossy(&buf[..n]).trim().to_string();
                     println!("Received: {}", msg);
                     messages.push(msg);
                 }
                 Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    // No data to read, continue
+                    // No data to read, continue (client is connected but hasn't sent anything)
                 }
                 Err(e) => {
                     eprintln!("Client disconnected");
@@ -142,31 +130,32 @@ fn run_host() {
         }
 
         // remove disconnected clients
-        for i in disconnected.into_iter().rev() {
+        for i in disconnected.into_iter().rev() { // we reverse the indices to remove from the end first to avoid shifting issues
             clients.remove(i);
         }
 
-        for msg in &messages {
-            clients.retain_mut(|client| writeln!(client, "{}", msg).is_ok())
+        for msg in &messages { // iterate over whole collection of messages
+            clients.retain_mut(|client| writeln!(client, "{}", msg).is_ok()) // we keep only clients where closure is true
         }
 
         std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
     }
 }
 
+// We need to set stdin to non-blocking mode so we can read user input without blocking the main loop
 fn set_stdin_nonblocking() {
     unsafe {
-        let fd = std::io::stdin().as_raw_fd();
-        let flags = libc::fcntl(fd, libc::F_GETFL);
-        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK);
+        let fd = std::io::stdin().as_raw_fd(); // get the file descriptor for stdin
+        let flags = libc::fcntl(fd, libc::F_GETFL); // get the current flags for stdin
+        libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK); // set the O_NONBLOCK flag to make stdin non-blocking
     }
 }
 
 fn run_client(mut stream: Client) {
     println!("Connected to chat server. Type messages and press Enter.");
-    set_stdin_nonblocking();
+    set_stdin_nonblocking(); // set stdin to non-blocking mode
 
-    match &stream {
+    match &stream { // set both unix and tcp streams to non-blocking
         Client::Unix(s) => s
             .set_nonblocking(true)
             .expect("Failed to set non-blocking mode"),
@@ -176,21 +165,21 @@ fn run_client(mut stream: Client) {
     }
 
     let stdin = std::io::stdin();
-    let mut stdin_reader = BufReader::new(stdin);
+    let mut stdin_reader = BufReader::new(stdin); // wrap stdin in a BufReader to read lines of input
 
     loop {
         let mut buf = [0u8; 1024];
-        match stream.read(&mut buf) {
-            Ok(0) => {
+        match stream.read(&mut buf) { // non blocking 1024 byte buffer read from the server
+            Ok(0) => { // server closed the connection
                 println!("Server disconnected");
                 break;
             }
-            Ok(n) => {
+            Ok(n) => { // server sent data
                 let msg = String::from_utf8_lossy(&buf[..n]);
                 println!("> {}", msg);
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                // no data
+                // no data from server
             }
             Err(e) => {
                 eprintln!("Connection error: {}", e);
