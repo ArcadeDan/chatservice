@@ -122,6 +122,7 @@ fn handle_login(stream: &mut Client) -> Option<String> {
                     continue;
                 }
                 if users.get(*user_id).map_or(false, |p| p == password) {
+                    let _ = stream.write(format!("OK {}\n", user_id).as_bytes());
                     println!("{} login", user_id);
                     return Some(user_id.to_string());
                 } else {
@@ -420,6 +421,7 @@ fn run_client(mut stream: Client) {
                 }
                 // if login failed, prompt again
             }
+            
             Err(_) => return,
         }
     }
@@ -465,15 +467,16 @@ fn run_client(mut stream: Client) {
             }
         }
 
-        let mut raw = [0u8; 256];
-        let stdin = std::io::stdin();
-        let mut handle = stdin.lock();
+        let mut raw = [0u8; 256]; // raw buffer for stdin bytes
+        let stdin = std::io::stdin(); // handle
+        let mut handle = stdin.lock(); // lock stdin
         match handle.read(&mut raw) {
-            Ok(0) => break,
-            Ok(n) => {
+            Ok(0) => break, // EOF
+            Ok(n) => { 
+                // got n bytes from stdin, we append it to the input buffer
                 input_buf.push_str(&String::from_utf8_lossy(&raw[..n]));
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {} // no input from user
             Err(_) => break,
         }
         drop(handle);
