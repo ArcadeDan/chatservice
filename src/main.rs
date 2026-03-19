@@ -26,6 +26,9 @@ const MIN_USERNAME_LEN: usize = 3;
 const MAX_PASSWORD_LEN: usize = 8;
 const MIN_PASSWORD_LEN: usize = 4;
 
+const MAX_CLIENTS: usize = 3;
+
+
 // START OF LOGIN FUNCTIONALITY
 struct AuthenticatedClient {
     username: String,
