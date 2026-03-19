@@ -122,12 +122,11 @@ fn handle_login(stream: &mut Client) -> Option<String> {
                     continue;
                 }
                 if users.get(*user_id).map_or(false, |p| p == password) {
-                    let _ = stream.write(format!("OK Welcome, {}!\n", user_id).as_bytes());
-                    println!("'{}' has joined", user_id);
+                    println!("{} login", user_id);
                     return Some(user_id.to_string());
                 } else {
                     let _ = stream.write(b"Denied. User name or password incorrect.\n");
-                    println!("Failed login attempt for '{}'", user_id);
+                    println!("Failed login attempt for {}", user_id);
                     continue;
                 }
             }
@@ -150,7 +149,7 @@ fn handle_login(stream: &mut Client) -> Option<String> {
                 }
                 let _ =
                     stream.write(format!("New user account created. Please login.\n").as_bytes());
-                println!("New user '{}' created and logged in", user_id);
+                println!("New user account created");
                 continue;
             }
             _ => {
@@ -218,12 +217,13 @@ fn run_host() {
 
     let mut clients: Vec<AuthenticatedClient> = Vec::new();
 
+    println!("My chat room server. Version One.\n");
     loop {
         // accept new connections
         match unix_listener.accept() {
             Ok((stream, _addr)) => {
                 // if a client connects to the UNIX socket
-                println!("New Unix connection, awaiting login...");
+                //println!("New Unix connection, awaiting login...");
                 let mut client = Client::Unix(stream);
                 if let Some(username) = handle_login(&mut client) {
                     if let Client::Unix(s) = &client {
@@ -247,7 +247,7 @@ fn run_host() {
         match tcp_listener.accept() {
             Ok((stream, addr)) => {
                 // if a client connects to the TCP socket
-                println!("New TCP client connection from {}, awaiting login...", addr);
+                //println!("New TCP client connection from {}, awaiting login...", addr);
                 let mut client = Client::Tcp(stream);
                 if let Some(username) = handle_login(&mut client) {
                     if let Client::Tcp(s) = &client {
@@ -268,6 +268,8 @@ fn run_host() {
             }
         }
 
+        
+
         // read messages from clients
         let mut messages: Vec<String> = Vec::new(); // collect all messages in an iteration
         let mut disconnected: Vec<usize> = Vec::new(); // for removing disconnected clients after the loop
@@ -279,7 +281,7 @@ fn run_host() {
                 Ok(0) => {
                     // 0 bytes read means the client has disconnected and we mark it for removal
                     // Client disconnected
-                    println!("{} left.", client.username);
+                    println!("{} logout.", client.username);
                     disconnected.push(i);
                 }
                 Ok(n) => {
@@ -291,7 +293,7 @@ fn run_host() {
 
                     if text == "logout" {
                         let _ = client.stream.flush();
-                        println!("'{}' left.", client.username);
+                        println!("{} logout.", client.username);
                         disconnected.push(i);
                     } else {
                         let msg = format!("{}: {}", client.username, text);
@@ -303,7 +305,7 @@ fn run_host() {
                     // No data to read, continue (client is connected but hasn't sent anything)
                 }
                 Err(e) => {
-                    eprintln!("'{}'", client.username);
+                    eprintln!("{}", client.username);
                     disconnected.push(i);
                 }
             }
@@ -390,10 +392,11 @@ fn client_send_auth(stream: &mut Client, input: &str) -> bool {
 }
 
 fn run_client(mut stream: Client) {
-    println!("My chat room client. Version One.");
+    println!("My chat room client. Version One.\n");
 
     let stdin = std::io::stdin();
     let mut stdin_reader = BufReader::new(stdin.lock());
+    let mut logged_in_user = String::new();
 
     loop {
         let _ = std::io::stdout().flush(); // flush stdout to ensure prompt is shown before input
@@ -405,8 +408,15 @@ fn run_client(mut stream: Client) {
                 if trimmed.is_empty() {
                     continue;
                 }
-                if client_send_auth(&mut stream, trimmed) {
-                    break; // logged in
+                let parts: Vec<&str> = trimmed.splitn(3, ' ').collect();
+                if let [_, username, _] = parts.as_slice() {
+                    let name = username.to_string();
+                    if client_send_auth(&mut stream, trimmed) {
+                        logged_in_user = name;
+                        break;
+                    }
+                } else {
+                    let _ = client_send_auth(&mut stream, trimmed);
                 }
                 // if login failed, prompt again
             }
@@ -484,7 +494,7 @@ fn run_client(mut stream: Client) {
             if trimmed == "logout" {
                 let _ = stream.write(b"logout\n");
                 let _ = stream.flush();
-                println!("Logged out.");
+                println!("{} left.", logged_in_user);
                 return;
             }
 
