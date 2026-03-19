@@ -28,7 +28,6 @@ const MIN_PASSWORD_LEN: usize = 4;
 
 const MAX_CLIENTS: usize = 3;
 
-
 // START OF LOGIN FUNCTIONALITY
 struct AuthenticatedClient {
     username: String,
@@ -221,115 +220,111 @@ fn run_host() {
 
     println!("Chat server listening on {} and {}", socket_path, tcp_addr);
 
-    let mut clients: Vec<AuthenticatedClient> = Vec::new();
+    let clients: Arc<Mutex<Vec<AuthenticatedClient>>> = Arc::new(Mutex::new(Vec::new())); // shared state of clients across threads with lock
 
-    println!("My chat room server. Version One.\n");
+    println!("My chat room server. Version Two.\n");
+
+    let clients_clone = Arc::clone(&clients);
+    thread::spawn(move || {
+        loop {
+            let mut messages: Vec<String> = Vec::new();
+            let mut disconnected: Vec<usize> = Vec::new();
+
+            {
+                let mut clients = clients_clone.lock().unwrap();
+                for (i, client) in clients.iter_mut().enumerate() {
+                    let mut buf = [0u8; 1024];
+                    match client.stream.read(&mut buf) {
+                        Ok(0) => {
+                            println!("{} logout.", client.username);
+                            disconnected.push(i);
+                        }
+                        Ok(n) => {
+                            let text = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+                            if text.is_empty() {
+                                continue;
+                            }
+                            if text == "logout" {
+                                println!("{} logout.", client.username);
+                                disconnected.push(i);
+                            } else {
+                                let msg = format!("{}: {}", client.username, text);
+                                println!("{}", msg);
+                                messages.push(msg);
+                            }
+                        }
+                        Err(e) if e.kind() == ErrorKind::WouldBlock => {} // no message from this client
+                        Err(_) => {
+                            disconnected.push(i);
+                        }
+                    }
+                }
+
+                // disconnected client removal
+                for i in disconnected.into_iter().rev() {
+                    clients.remove(i);
+                }
+
+                //broadcast message
+                for msg in &messages {
+                    clients.retain_mut(|client| write!(client.stream, "{}\n", msg).is_ok());
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
+        }
+    });
+
+    // for main thread to accept new connections and spawwnn more threads
+
     loop {
-        // accept new connections
+        // accept new unix clients
         match unix_listener.accept() {
             Ok((stream, _addr)) => {
-                // if a client connects to the UNIX socket
-                //println!("New Unix connection, awaiting login...");
-                let mut client = Client::Unix(stream);
-                if let Some(username) = handle_login(&mut client) {
-                    if let Client::Unix(s) = &client {
-                        s.set_nonblocking(true)
-                            .expect("Failed to set non-blocking mode");
+                let clients = Arc::clone(&clients);
+                thread::spawn(move || {
+                    let mut client = Client::Unix(stream);
+                    if let Some(username) = handle_login(&mut client) {
+                        if let Client::Unix(s) = &client {
+                            s.set_nonblocking(true)
+                                .expect("Failed to set non-blocking mode");
+                        }
+                        let mut clients = clients.lock().unwrap();
+                        clients.push(AuthenticatedClient {
+                            username,
+                            stream: client,
+                        });
                     }
-                    clients.push(AuthenticatedClient {
-                        username,
-                        stream: client,
-                    }); // add the new authenticated client
-                }
+                });
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                // No new connections, continue to check existing clients
-            }
-            Err(e) => {
-                eprintln!("Error accepting connection: {}", e);
-            }
+
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {} // no new unix client
+            Err(e) => eprintln!("Error accepting unix connection: {}", e),
         }
 
+        // accept new tcp clients
         match tcp_listener.accept() {
-            Ok((stream, addr)) => {
-                // if a client connects to the TCP socket
-                //println!("New TCP client connection from {}, awaiting login...", addr);
-                let mut client = Client::Tcp(stream);
-                if let Some(username) = handle_login(&mut client) {
-                    if let Client::Tcp(s) = &client {
-                        s.set_nonblocking(true)
-                            .expect("Failed to set non-blocking mode");
+            Ok((stream, _addr)) => {
+                let clients = Arc::clone(&clients);
+                thread::spawn(move || {
+                    let mut client = Client::Tcp(stream);
+                    if let Some(username) = handle_login(&mut client) {
+                        if let Client::Tcp(s) = &client {
+                            s.set_nonblocking(true)
+                                .expect("Failed to set non-blocking mode");
+                        }
+                        let mut clients = clients.lock().unwrap();
+                        clients.push(AuthenticatedClient {
+                            username,
+                            stream: client,
+                        });
                     }
-                    clients.push(AuthenticatedClient {
-                        username,
-                        stream: client,
-                    }); // add the new authenticated client
-                }
+                });
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                // No new connections, continue to check existing clients
-            }
-            Err(e) => {
-                eprintln!("Error accepting TCP connection: {}", e);
-            }
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {} // no new tcp client
+            Err(e) => eprintln!("Error accepting TCP connection: {}", e),
         }
-
-        
-
-        // read messages from clients
-        let mut messages: Vec<String> = Vec::new(); // collect all messages in an iteration
-        let mut disconnected: Vec<usize> = Vec::new(); // for removing disconnected clients after the loop
-
-        for (i, client) in clients.iter_mut().enumerate() {
-            // track index for removing disconnected clients later
-            let mut buf = [0u8; 1024]; // 1024 byte buffer
-            match client.stream.read(&mut buf) {
-                Ok(0) => {
-                    // 0 bytes read means the client has disconnected and we mark it for removal
-                    // Client disconnected
-                    println!("{} logout.", client.username);
-                    disconnected.push(i);
-                }
-                Ok(n) => {
-                    // client sent data, we convert it to a string and add it to the list of messages to broadcast
-                    let text = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-                    if text.is_empty() {
-                        continue; // we skip emtpy messages
-                    }
-
-                    if text == "logout" {
-                        let _ = client.stream.flush();
-                        println!("{} logout.", client.username);
-                        disconnected.push(i);
-                    } else {
-                        let msg = format!("{}: {}", client.username, text);
-                        println!("{}", msg);
-                        messages.push(msg);
-                    }
-                }
-                Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                    // No data to read, continue (client is connected but hasn't sent anything)
-                }
-                Err(e) => {
-                    eprintln!("{}", client.username);
-                    disconnected.push(i);
-                }
-            }
-        }
-
-        // remove disconnected clients
-        for i in disconnected.into_iter().rev() {
-            // we reverse the indices to remove from the end first to avoid shifting issues
-            clients.remove(i);
-        }
-
-        for msg in &messages {
-            // iterate over whole collection of messages
-            clients.retain_mut(|client| write!(client.stream, "{}\n", msg).is_ok()) // we keep only clients where closure is true
-        }
-
-        std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
     }
+    std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
 }
 
 // We need to set stdin to non-blocking mode so we can read user input without blocking the main loop
@@ -426,7 +421,7 @@ fn run_client(mut stream: Client) {
                 }
                 // if login failed, prompt again
             }
-            
+
             Err(_) => return,
         }
     }
@@ -477,7 +472,7 @@ fn run_client(mut stream: Client) {
         let mut handle = stdin.lock(); // lock stdin
         match handle.read(&mut raw) {
             Ok(0) => break, // EOF
-            Ok(n) => { 
+            Ok(n) => {
                 // got n bytes from stdin, we append it to the input buffer
                 input_buf.push_str(&String::from_utf8_lossy(&raw[..n]));
             }
