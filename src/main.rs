@@ -48,6 +48,13 @@ fn load_users() -> HashMap<String, String> {
 }
 
 fn save_user(username: &str, password: &str) -> std::io::Result<()> {
+    if let Ok(contents) = fs::read_to_string(PASSWORDS_PATH) {
+        if !contents.is_empty() && !contents.ends_with("\n") {
+            let mut file = fs::OpenOptions::new().append(true).open(PASSWORDS_PATH)?;
+            writeln!(file)?;
+        }
+    }
+
     let mut file = fs::OpenOptions::new()
         .append(true)
         .create(true)
@@ -89,71 +96,70 @@ fn validate_password(password: &str) -> Result<(), String> {
 }
 
 fn handle_login(stream: &mut Client) -> Option<String> {
-    let users = load_users();
-
     match stream {
         Client::Unix(s) => s.set_nonblocking(false).ok(),
         Client::Tcp(s) => s.set_nonblocking(false).ok(),
     };
-    let mut buf = [0u8; 1024];
-    let n = match stream.read(&mut buf) {
-        Ok(0) | Err(_) => return None,
-        Ok(n) => n,
-    };
+    loop {
+        let users = load_users();
+        let mut buf = [0u8; 1024];
+        let n = match stream.read(&mut buf) {
+            Ok(0) | Err(_) => return None,
+            Ok(n) => n,
+        };
 
-    let input = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-    let mut parts: Vec<&str> = input.splitn(3, ' ').collect();
+        let input = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+        let mut parts: Vec<&str> = input.splitn(3, ' ').collect();
 
-    match parts.as_slice() {
-        ["login", user_id, password] => {
-            if let Err(e) = validate_username(user_id) {
-                let _ = stream.write(format!("ERR {}\n", e).as_bytes());
-                return None;
+        match parts.as_slice() {
+            ["login", user_id, password] => {
+                if let Err(e) = validate_username(user_id) {
+                    let _ = stream.write(format!("ERR {}\n", e).as_bytes());
+                    continue;
+                }
+                if let Err(e) = validate_password(password) {
+                    let _ = stream.write(format!("ERR {}\n", e).as_bytes());
+                    continue;
+                }
+                if users.get(*user_id).map_or(false, |p| p == password) {
+                    let _ = stream.write(format!("OK Welcome, {}!\n", user_id).as_bytes());
+                    println!("'{}' has joined", user_id);
+                    return Some(user_id.to_string());
+                } else {
+                    let _ = stream.write(b"Denied. User name or password incorrect.\n");
+                    println!("Failed login attempt for '{}'", user_id);
+                    continue;
+                }
             }
-            if let Err(e) = validate_password(password) {
-                let _ = stream.write(format!("ERR {}\n", e).as_bytes());
-                return None;
+            ["newuser", user_id, password] => {
+                if let Err(e) = validate_username(user_id) {
+                    let _ = stream.write(format!("ERR {}\n", e).as_bytes());
+                    continue;
+                }
+                if let Err(e) = validate_password(password) {
+                    let _ = stream.write(format!("ERR {}\n", e).as_bytes());
+                    continue;
+                }
+                if users.contains_key(*user_id) {
+                    let _ = stream.write(b"Denied. User account already exists\n");
+                    continue;
+                }
+                if save_user(user_id, password).is_err() {
+                    let _ = stream.write(b"ERR Failed to create user\n");
+                    continue;
+                }
+                let _ =
+                    stream.write(format!("New user account created. Please login.\n").as_bytes());
+                println!("New user '{}' created and logged in", user_id);
+                continue;
             }
-            if users.get(*user_id).map_or(false, |p| p == password) {
-                let _ = stream.write(format!("OK Welcome, {}!\n", user_id).as_bytes());
-                println!("'{}' has joined", user_id);
-                Some(user_id.to_string())
-            } else {
-                let _ = stream.write(b"ERR Invalid credentials\n");
-                println!("Failed login attempt for '{}'", user_id);
-                None
+            _ => {
+                let _ = stream.write(b"Denied. Please login first.\n");
+                continue;
             }
-        }
-        ["newuser", user_id, password] => {
-            if let Err(e) = validate_username(user_id) {
-                let _ = stream.write(format!("ERR {}\n", e).as_bytes());
-                return None;
-            }
-            if let Err(e) = validate_password(password) {
-                let _ = stream.write(format!("ERR {}\n", e).as_bytes());
-                return None;
-            }
-            if users.contains_key(*user_id) {
-                let _ = stream.write(b"ERR Username already exists\n");
-                return None;
-            }
-            if save_user(user_id, password).is_err() {
-                let _ = stream.write(b"ERR Failed to create user\n");
-                return None;
-            }
-            let _ = stream.write(format!("OK User '{}' created. Welcome!\n", user_id).as_bytes());
-            println!("New user '{}' created and logged in", user_id);
-            Some(user_id.to_string())
-        }
-        _ => {
-            let _ = stream.write(
-                b"ERR Usage: login <username> <password> or newuser <username> <password>\n",
-            );
-            None
         }
     }
 }
-
 // We need a unified type to represent both Unix and TCP clients
 enum Client {
     Unix(UnixStream),
@@ -279,6 +285,10 @@ fn run_host() {
                 Ok(n) => {
                     // client sent data, we convert it to a string and add it to the list of messages to broadcast
                     let text = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+                    if text.is_empty() {
+                        continue; // we skip emtpy messages
+                    }
+
                     if text == "logout" {
                         let _ = client.stream.flush();
                         println!("'{}' left.", client.username);
@@ -307,7 +317,7 @@ fn run_host() {
 
         for msg in &messages {
             // iterate over whole collection of messages
-            clients.retain_mut(|client| writeln!(client.stream, "{}", msg).is_ok()) // we keep only clients where closure is true
+            clients.retain_mut(|client| write!(client.stream, "{}\n", msg).is_ok()) // we keep only clients where closure is true
         }
 
         std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
@@ -334,9 +344,7 @@ fn client_send_auth(stream: &mut Client, input: &str) -> bool {
             return false;
         }
         _ => {
-            eprintln!(
-                "You are not logged in. Please use: login <username> <password> or newuser <username> <password>"
-            );
+            eprintln!("Denied. Please login first.");
             return false;
         }
     };
@@ -368,7 +376,7 @@ fn client_send_auth(stream: &mut Client, input: &str) -> bool {
             let response = String::from_utf8_lossy(&buf[..n]).trim().to_string();
             if response.starts_with("OK") {
                 println!("{}", response);
-                true
+                command == "login"
             } else {
                 eprintln!("{}", response);
                 false
@@ -382,6 +390,8 @@ fn client_send_auth(stream: &mut Client, input: &str) -> bool {
 }
 
 fn run_client(mut stream: Client) {
+    println!("My chat room client. Version One.");
+
     let stdin = std::io::stdin();
     let mut stdin_reader = BufReader::new(stdin.lock());
 
@@ -406,7 +416,6 @@ fn run_client(mut stream: Client) {
 
     drop(stdin_reader); // drop the stdin reader to release the lock on stdin
     println!("login confirmed");
-    println!("My chat room client. Version One.");
 
     set_stdin_nonblocking(); // set stdin to non-blocking mode
 
@@ -434,7 +443,7 @@ fn run_client(mut stream: Client) {
             Ok(n) => {
                 // server sent data
                 let msg = String::from_utf8_lossy(&buf[..n]);
-                println!("{}", msg);
+                print!("{}", msg);
                 let _ = std::io::stdout().flush();
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -479,7 +488,19 @@ fn run_client(mut stream: Client) {
                 return;
             }
 
-            if trimmed.len() > MAX_MESSAGE_SIZE {
+            if !trimmed.starts_with("send") {
+                eprintln!("Usage: send <message>");
+                continue;
+            }
+
+            let message = &trimmed["send ".len()..];
+
+            if message.is_empty() {
+                eprintln!("Message cannot be empty");
+                continue;
+            }
+
+            if message.len() > MAX_MESSAGE_SIZE {
                 eprintln!(
                     "Message must be at most {} characters long",
                     MAX_MESSAGE_SIZE
@@ -487,10 +508,7 @@ fn run_client(mut stream: Client) {
                 continue;
             }
 
-            if stream.write(trimmed.as_bytes()).is_err()
-                || stream.write(b"\n").is_err()
-                || stream.flush().is_err()
-            {
+            if stream.write(message.as_bytes()).is_err() || stream.flush().is_err() {
                 eprintln!("Failed to send message");
                 return;
             }
