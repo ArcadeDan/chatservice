@@ -1,8 +1,14 @@
 use std::{
-    collections::HashMap, fs, io::{BufRead, BufReader, ErrorKind, Read, Write}, net::{TcpListener, TcpStream}, os::{
+    collections::HashMap,
+    fs,
+    io::{BufRead, BufReader, ErrorKind, Read, Write},
+    net::{TcpListener, TcpStream},
+    os::{
         fd::AsRawFd,
         unix::net::{self, UnixListener, UnixStream},
-    }, sync::{Arc, Mutex}, thread
+    },
+    sync::{Arc, Mutex},
+    thread,
 };
 
 const PORT: u16 = 13952;
@@ -52,24 +58,35 @@ fn save_user(username: &str, password: &str) -> std::io::Result<()> {
 
 fn validate_username(username: &str) -> Result<(), String> {
     if username.len() < MIN_USERNAME_LEN {
-        return Err(format!("Username must be at least {} characters long", MIN_USERNAME_LEN));
+        return Err(format!(
+            "Username must be at least {} characters long",
+            MIN_USERNAME_LEN
+        ));
     }
     if username.len() > MAX_USERNAME_LEN {
-        return Err(format!("Username must be at most {} characters long", MAX_USERNAME_LEN));
+        return Err(format!(
+            "Username must be at most {} characters long",
+            MAX_USERNAME_LEN
+        ));
     }
     Ok(())
 }
 
 fn validate_password(password: &str) -> Result<(), String> {
     if password.len() < MIN_PASSWORD_LEN {
-        return Err(format!("Password must be at least {} characters long", MIN_PASSWORD_LEN));
+        return Err(format!(
+            "Password must be at least {} characters long",
+            MIN_PASSWORD_LEN
+        ));
     }
     if password.len() > MAX_PASSWORD_LEN {
-        return Err(format!("Password must be at most {} characters long", MAX_PASSWORD_LEN));
+        return Err(format!(
+            "Password must be at most {} characters long",
+            MAX_PASSWORD_LEN
+        ));
     }
     Ok(())
 }
-
 
 fn handle_login(stream: &mut Client) -> Option<String> {
     let users = load_users();
@@ -85,10 +102,10 @@ fn handle_login(stream: &mut Client) -> Option<String> {
     };
 
     let input = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-    let mut parts: Vec<&str> = input.splitn(3, ':').collect();
+    let mut parts: Vec<&str> = input.splitn(3, ' ').collect();
 
     match parts.as_slice() {
-        ["LOGIN", user_id, password] => {
+        ["login", user_id, password] => {
             if let Err(e) = validate_username(user_id) {
                 let _ = stream.write(format!("ERR {}\n", e).as_bytes());
                 return None;
@@ -107,7 +124,7 @@ fn handle_login(stream: &mut Client) -> Option<String> {
                 None
             }
         }
-        ["NEWUSER", user_id, password] => {
+        ["newuser", user_id, password] => {
             if let Err(e) = validate_username(user_id) {
                 let _ = stream.write(format!("ERR {}\n", e).as_bytes());
                 return None;
@@ -129,12 +146,13 @@ fn handle_login(stream: &mut Client) -> Option<String> {
             Some(user_id.to_string())
         }
         _ => {
-            let _ = stream.write(b"ERR Usage: LOGIN <username> <password> or NEWUSER <username> <password>\n");
+            let _ = stream.write(
+                b"ERR Usage: login <username> <password> or newuser <username> <password>\n",
+            );
             None
         }
     }
 }
-
 
 // We need a unified type to represent both Unix and TCP clients
 enum Client {
@@ -175,8 +193,6 @@ fn run_host() {
     // verify if password file exists on startup
     let users = load_users();
     println!("Loaded {} users from {}", users.len(), PASSWORDS_PATH);
-    
-
 
     let _ = fs::remove_file(socket_path); // remove socket from last session
 
@@ -185,7 +201,6 @@ fn run_host() {
     unix_listener
         .set_nonblocking(true)
         .expect("Failed to set non-blocking mode");
-
 
     // bind a TCP socket to 127.0.0.1:13952 and listen for incoming connections
     let tcp_listener = TcpListener::bind(&tcp_addr).expect("Failed to bind to TCP address"); // 127.0.0.1:13952
@@ -200,14 +215,19 @@ fn run_host() {
     loop {
         // accept new connections
         match unix_listener.accept() {
-            Ok((stream, _addr)) => { // if a client connects to the UNIX socket
+            Ok((stream, _addr)) => {
+                // if a client connects to the UNIX socket
                 println!("New Unix connection, awaiting login...");
                 let mut client = Client::Unix(stream);
                 if let Some(username) = handle_login(&mut client) {
                     if let Client::Unix(s) = &client {
-                        s.set_nonblocking(true).expect("Failed to set non-blocking mode");
+                        s.set_nonblocking(true)
+                            .expect("Failed to set non-blocking mode");
                     }
-                    clients.push(AuthenticatedClient { username, stream: client }); // add the new authenticated client
+                    clients.push(AuthenticatedClient {
+                        username,
+                        stream: client,
+                    }); // add the new authenticated client
                 }
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -219,14 +239,19 @@ fn run_host() {
         }
 
         match tcp_listener.accept() {
-            Ok((stream, addr)) => { // if a client connects to the TCP socket
+            Ok((stream, addr)) => {
+                // if a client connects to the TCP socket
                 println!("New TCP client connection from {}, awaiting login...", addr);
                 let mut client = Client::Tcp(stream);
                 if let Some(username) = handle_login(&mut client) {
                     if let Client::Tcp(s) = &client {
-                        s.set_nonblocking(true).expect("Failed to set non-blocking mode");
+                        s.set_nonblocking(true)
+                            .expect("Failed to set non-blocking mode");
                     }
-                    clients.push(AuthenticatedClient { username, stream: client }); // add the new authenticated client
+                    clients.push(AuthenticatedClient {
+                        username,
+                        stream: client,
+                    }); // add the new authenticated client
                 }
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
@@ -241,17 +266,21 @@ fn run_host() {
         let mut messages: Vec<String> = Vec::new(); // collect all messages in an iteration
         let mut disconnected: Vec<usize> = Vec::new(); // for removing disconnected clients after the loop
 
-        for (i, client) in clients.iter_mut().enumerate() { // track index for removing disconnected clients later
+        for (i, client) in clients.iter_mut().enumerate() {
+            // track index for removing disconnected clients later
             let mut buf = [0u8; 1024]; // 1024 byte buffer
             match client.stream.read(&mut buf) {
-                Ok(0) => { // 0 bytes read means the client has disconnected and we mark it for removal
+                Ok(0) => {
+                    // 0 bytes read means the client has disconnected and we mark it for removal
                     // Client disconnected
                     println!("{} left.", client.username);
                     disconnected.push(i);
                 }
-                Ok(n) => { // client sent data, we convert it to a string and add it to the list of messages to broadcast
+                Ok(n) => {
+                    // client sent data, we convert it to a string and add it to the list of messages to broadcast
                     let text = String::from_utf8_lossy(&buf[..n]).trim().to_string();
                     if text == "logout" {
+                        let _ = client.stream.flush();
                         println!("'{}' left.", client.username);
                         disconnected.push(i);
                     } else {
@@ -271,11 +300,13 @@ fn run_host() {
         }
 
         // remove disconnected clients
-        for i in disconnected.into_iter().rev() { // we reverse the indices to remove from the end first to avoid shifting issues
+        for i in disconnected.into_iter().rev() {
+            // we reverse the indices to remove from the end first to avoid shifting issues
             clients.remove(i);
         }
 
-        for msg in &messages { // iterate over whole collection of messages
+        for msg in &messages {
+            // iterate over whole collection of messages
             clients.retain_mut(|client| writeln!(client.stream, "{}", msg).is_ok()) // we keep only clients where closure is true
         }
 
@@ -292,14 +323,95 @@ fn set_stdin_nonblocking() {
     }
 }
 
+fn client_send_auth(stream: &mut Client, input: &str) -> bool {
+    let parts: Vec<&str> = input.trim().splitn(3, ' ').collect();
+
+    let (command, username, password) = match parts.as_slice() {
+        ["login", user_id, password] => ("login", *user_id, *password),
+        ["newuser", user_id, password] => ("newuser", *user_id, *password),
+        ["login", ..] | ["newuser", ..] => {
+            eprintln!("Usage: login <username> <password> or newuser <username> <password>");
+            return false;
+        }
+        _ => {
+            eprintln!(
+                "You are not logged in. Please use: login <username> <password> or newuser <username> <password>"
+            );
+            return false;
+        }
+    };
+
+    // client side validation of username and password before sending to the server
+    if let Err(e) = validate_username(username) {
+        eprintln!("{}", e);
+        return false;
+    }
+    if let Err(e) = validate_password(password) {
+        eprintln!("{}", e);
+        return false;
+    }
+
+    //send command to server
+    let cmd = format!("{} {} {}\n", command, username, password);
+    if stream.write(cmd.as_bytes()).is_err() {
+        eprintln!("Failed to send command to server");
+        return false;
+    }
+
+    let mut buf = [0u8; 1024];
+    match stream.read(&mut buf) {
+        Ok(0) => {
+            eprintln!("Server closed connection");
+            false
+        }
+        Ok(n) => {
+            let response = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+            if response.starts_with("OK") {
+                println!("{}", response);
+                true
+            } else {
+                eprintln!("{}", response);
+                false
+            }
+        }
+        Err(e) => {
+            eprintln!("Error reading from server: {}", e);
+            false
+        }
+    }
+}
+
 fn run_client(mut stream: Client) {
-    
+    let stdin = std::io::stdin();
+    let mut stdin_reader = BufReader::new(stdin.lock());
 
+    loop {
+        let _ = std::io::stdout().flush(); // flush stdout to ensure prompt is shown before input
+        let mut line = String::new();
+        match stdin_reader.read_line(&mut line) {
+            Ok(0) => return, // EOF
+            Ok(_) => {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                if client_send_auth(&mut stream, trimmed) {
+                    break; // logged in
+                }
+                // if login failed, prompt again
+            }
+            Err(_) => return,
+        }
+    }
 
+    drop(stdin_reader); // drop the stdin reader to release the lock on stdin
+    println!("login confirmed");
+    println!("My chat room client. Version One.");
 
     set_stdin_nonblocking(); // set stdin to non-blocking mode
 
-    match &stream { // set both unix and tcp streams to non-blocking
+    match &stream {
+        // set both unix and tcp streams to non-blocking
         Client::Unix(s) => s
             .set_nonblocking(true)
             .expect("Failed to set non-blocking mode"),
@@ -308,19 +420,22 @@ fn run_client(mut stream: Client) {
             .expect("Failed to set non-blocking mode"),
     }
 
-    let stdin = std::io::stdin();
-    let mut stdin_reader = BufReader::new(stdin); // wrap stdin in a BufReader to read lines of input
+    let mut input_buf = String::new(); // accumulate stdin input until we get a full line
 
     loop {
         let mut buf = [0u8; 1024];
-        match stream.read(&mut buf) { // non blocking 1024 byte buffer read from the server
-            Ok(0) => { // server closed the connection
+        match stream.read(&mut buf) {
+            // non blocking 1024 byte buffer read from the server
+            Ok(0) => {
+                // server closed the connection
                 println!("Server disconnected");
                 break;
             }
-            Ok(n) => { // server sent data
+            Ok(n) => {
+                // server sent data
                 let msg = String::from_utf8_lossy(&buf[..n]);
-                println!("> {}", msg);
+                println!("{}", msg);
+                let _ = std::io::stdout().flush();
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {
                 // no data from server
@@ -331,19 +446,54 @@ fn run_client(mut stream: Client) {
             }
         }
 
-        let mut line = String::new();
-        match stdin_reader.read_line(&mut line) {
+        let mut raw = [0u8; 256];
+        let stdin = std::io::stdin();
+        let mut handle = stdin.lock();
+        match handle.read(&mut raw) {
             Ok(0) => break,
-            Ok(_) => {
-                if write!(stream, "{}", line).is_err() {
-                    eprintln!("Failed to send message");
-                    break;
-                }
+            Ok(n) => {
+                input_buf.push_str(&String::from_utf8_lossy(&raw[..n]));
             }
-            Err(e) if e.kind() == ErrorKind::WouldBlock => {
-                // no input
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {}
+            Err(_) => break,
+        }
+        drop(handle);
+
+        while let Some(pos) = input_buf.find('\n') {
+            let line: String = input_buf.drain(..=pos).collect();
+            let trimmed = line.trim();
+
+            if trimmed.is_empty() {
+                continue;
             }
-            Err(e) => break,
+
+            if trimmed.starts_with("login") || trimmed.starts_with("newuser") {
+                eprintln!("You are already logged in.");
+                continue;
+            }
+
+            if trimmed == "logout" {
+                let _ = stream.write(b"logout\n");
+                let _ = stream.flush();
+                println!("Logged out.");
+                return;
+            }
+
+            if trimmed.len() > MAX_MESSAGE_SIZE {
+                eprintln!(
+                    "Message must be at most {} characters long",
+                    MAX_MESSAGE_SIZE
+                );
+                continue;
+            }
+
+            if stream.write(trimmed.as_bytes()).is_err()
+                || stream.write(b"\n").is_err()
+                || stream.flush().is_err()
+            {
+                eprintln!("Failed to send message");
+                return;
+            }
         }
 
         std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
