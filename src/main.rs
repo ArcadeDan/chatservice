@@ -1,5 +1,15 @@
 // Dan Sparks
-
+// CS4850
+// 3-20-26
+/**
+ *  Chat Service in Rust
+ * =======================
+ *  This program allows you to chat with multiple people on a server.
+ *  This application also supports private messaging
+ *  Uses a textfile for tracking created users
+ *  
+ *  supports both TCP and Unix sockets
+ */
 use std::{
     collections::HashMap,
     fs,
@@ -54,7 +64,7 @@ fn load_users() -> HashMap<String, String> {
 fn save_user(username: &str, password: &str) -> std::io::Result<()> {
     if let Ok(contents) = fs::read_to_string(PASSWORDS_PATH) {
         if !contents.is_empty() && !contents.ends_with("\n") {
-            let mut file = fs::OpenOptions::new().append(true).open(PASSWORDS_PATH)?;
+            let mut file = fs::OpenOptions::new().append(true).open(PASSWORDS_PATH)?; // forces new line in passwords file
             writeln!(file)?;
         }
     }
@@ -63,11 +73,12 @@ fn save_user(username: &str, password: &str) -> std::io::Result<()> {
         .append(true)
         .create(true)
         .open(PASSWORDS_PATH)?;
-    writeln!(file, "{}:{}", username.trim(), password.trim())?;
+    writeln!(file, "{}:{}", username.trim(), password.trim())?; // forces new line in passwords file
     Ok(())
 }
 
 fn validate_username(username: &str) -> Result<(), String> {
+    // character length validation
     if username.len() < MIN_USERNAME_LEN {
         return Err(format!(
             "Username must be at least {} characters long",
@@ -84,6 +95,7 @@ fn validate_username(username: &str) -> Result<(), String> {
 }
 
 fn validate_password(password: &str) -> Result<(), String> {
+    // character length validation
     if password.len() < MIN_PASSWORD_LEN {
         return Err(format!(
             "Password must be at least {} characters long",
@@ -105,50 +117,54 @@ fn handle_login(stream: &mut Client) -> Option<String> {
         Client::Tcp(s) => s.set_nonblocking(false).ok(),
     };
     loop {
-        let users = load_users();
+        let users = load_users(); // load users into memory
         let mut buf = [0u8; 1024];
         let n = match stream.read(&mut buf) {
-            Ok(0) | Err(_) => return None,
-            Ok(n) => n,
+            Ok(0) | Err(_) => return None, // client disconnected or error
+            Ok(n) => n,                    // received n bytes
         };
 
-        let input = String::from_utf8_lossy(&buf[..n]).trim().to_string();
-        let mut parts: Vec<&str> = input.splitn(3, ' ').collect();
+        let input = String::from_utf8_lossy(&buf[..n]).trim().to_string(); // convert bytes to a string and trim whitespace
+        let mut parts: Vec<&str> = input.splitn(3, ' ').collect(); // split entered data
 
         match parts.as_slice() {
+            // we pattern match {command, "username", "passsword"}
             ["login", user_id, password] => {
                 if let Err(e) = validate_username(user_id) {
                     let _ = stream.write(format!("ERR {}\n", e).as_bytes());
-                    continue;
+                    continue; // go back to top of loop and wait for annother attempt
                 }
                 if let Err(e) = validate_password(password) {
+                    // password validation
                     let _ = stream.write(format!("ERR {}\n", e).as_bytes());
                     continue;
                 }
                 if users.get(*user_id).map_or(false, |p| p == password) {
+                    // line that actually validates the password
                     let _ = stream.write(format!("OK {}\n", user_id).as_bytes());
                     println!("{} login", user_id);
-                    return Some(user_id.to_string());
+                    return Some(user_id.to_string()); // password successfully validated
                 } else {
                     let _ = stream.write(b"Denied. User name or password incorrect.\n");
                     println!("Failed login attempt for {}", user_id);
-                    continue;
+                    continue; // try again
                 }
             }
             ["newuser", user_id, password] => {
                 if let Err(e) = validate_username(user_id) {
                     let _ = stream.write(format!("ERR {}\n", e).as_bytes());
-                    continue;
+                    continue; // checks length for username and password and errors if not met
                 }
                 if let Err(e) = validate_password(password) {
-                    let _ = stream.write(format!("ERR {}\n", e).as_bytes());
+                    let _ = stream.write(format!("ERR {}\n", e).as_bytes()); // validate password format
                     continue;
                 }
                 if users.contains_key(*user_id) {
-                    let _ = stream.write(b"Denied. User account already exists\n");
+                    let _ = stream.write(b"Denied. User account already exists\n"); // of course check if user exists in hash map
                     continue;
                 }
                 if save_user(user_id, password).is_err() {
+                    // saves user in the passwords file
                     let _ = stream.write(b"ERR Failed to create user\n");
                     continue;
                 }
@@ -158,6 +174,7 @@ fn handle_login(stream: &mut Client) -> Option<String> {
                 continue;
             }
             _ => {
+                // catch everything else
                 let _ = stream.write(b"Denied. Please login first.\n");
                 continue;
             }
@@ -230,30 +247,43 @@ fn run_host() {
             let mut messages: Vec<String> = Vec::new();
             let mut disconnected: Vec<usize> = Vec::new();
             let mut who_requests: Vec<usize> = Vec::new(); // track who request "who" to get past borrow checker
+            let mut private_messages: Vec<(usize, String, String)> = Vec::new(); // we need this to get past borrow checker
 
             {
                 let mut clients = clients_clone.lock().unwrap();
                 for (i, client) in clients.iter_mut().enumerate() {
-                    let mut buf = [0u8; 1024];
+                    // iterate through clients and collect index and client
+                    let mut buf = [0u8; 1024]; // buffer for reading messages from clients
                     match client.stream.read(&mut buf) {
                         Ok(0) => {
+                            // this is the case if a user has closed the connection (they send 0 bytes)
                             let msg = format!("{} left.", client.username);
                             println!("{} logout.", client.username);
                             messages.push(msg);
                             disconnected.push(i);
                         }
                         Ok(n) => {
-                            let text = String::from_utf8_lossy(&buf[..n]).trim().to_string();
+                            // NOTE - we use the utf8 conversion because rust only accepts UTF8 in raw arrays
+                            let text = String::from_utf8_lossy(&buf[..n]).trim().to_string(); // convert trim to white space 
                             if text.is_empty() {
                                 continue;
                             }
                             if text == "logout" {
+                                // explicit log out from user
                                 let msg = format!("{} left.", client.username);
                                 println!("{} logout.", client.username);
                                 messages.push(msg);
                                 disconnected.push(i);
                             } else if text == "who" {
                                 who_requests.push(i);
+                            } else if text.starts_with("@") {
+                                // we use the @ for routing, it will not show up on the output
+                                // private message: @target_username message
+                                if let Some(space_pos) = text.find(' ') {
+                                    let target = text[1..space_pos].to_string();
+                                    let pm_body = text[space_pos + 1..].to_string();
+                                    private_messages.push((i, target, pm_body));
+                                }
                             } else {
                                 let msg = format!("{}: {}", client.username, text);
                                 println!("{}", msg);
@@ -277,6 +307,26 @@ fn run_host() {
                     for &i in &who_requests {
                         let _ = clients[i].stream.write(response.as_bytes());
                         let _ = clients[i].stream.flush();
+                    }
+                }
+
+                // handle private messages BECAUSE BORROW CHECKER
+                for (sender_idx, target, pm_body) in &private_messages {
+                    let sender_name = &clients[*sender_idx].username.clone();
+                    let mut found = false;
+                    for client in clients.iter_mut() {
+                        if client.username == *target {
+                            let msg = format!("{} (to {}): {}", sender_name, target, pm_body);
+                            let _ = client.stream.write(msg.as_bytes());
+                            let _ = client.stream.flush();
+                            found = true;
+                            break;
+                        }
+                    }
+                    if !found {
+                        let error_message = format!("User '{}' not found.", target);
+                        let _ = clients[*sender_idx].stream.write(error_message.as_bytes());
+                        let _ = clients[*sender_idx].stream.flush();
                     }
                 }
 
@@ -397,6 +447,7 @@ fn client_send_auth(stream: &mut Client, input: &str) -> bool {
             false
         }
         Ok(n) => {
+            // NOTE - we use the utf8 conversion because rust only accepts UTF8 in raw arrays
             let response = String::from_utf8_lossy(&buf[..n]).trim().to_string();
             if response.starts_with("OK") {
                 println!("{}", response);
@@ -414,7 +465,7 @@ fn client_send_auth(stream: &mut Client, input: &str) -> bool {
 }
 
 fn run_client(mut stream: Client) {
-    println!("My chat room client. Version One.\n");
+    println!("My chat room client. Version Two.\n");
 
     let stdin = std::io::stdin();
     let mut stdin_reader = BufReader::new(stdin.lock());
@@ -475,6 +526,7 @@ fn run_client(mut stream: Client) {
             }
             Ok(n) => {
                 // server sent data
+                // NOTE - we use the utf8 conversion because rust only accepts UTF8 in raw arrays
                 let msg = String::from_utf8_lossy(&buf[..n]);
                 print!("{}", msg);
                 let _ = std::io::stdout().flush();
@@ -495,6 +547,7 @@ fn run_client(mut stream: Client) {
             Ok(0) => break, // EOF
             Ok(n) => {
                 // got n bytes from stdin, we append it to the input buffer
+                // NOTE - we use the utf8 conversion because rust only accepts UTF8 in raw arrays
                 input_buf.push_str(&String::from_utf8_lossy(&raw[..n]));
             }
             Err(e) if e.kind() == ErrorKind::WouldBlock => {} // no input from user
@@ -530,36 +583,64 @@ fn run_client(mut stream: Client) {
                 continue;
             }
 
-            if !trimmed.starts_with("send all") {
-                eprintln!("Usage: send all <message>");
+            if trimmed.starts_with("send all ") {
+                let message = &trimmed["send all ".len()..];
+                if message.is_empty() {
+                    eprintln!("Message cannot be empty");
+                    continue;
+                }
+                if message.len() > MAX_MESSAGE_SIZE {
+                    eprintln!(
+                        "Message must be at most {} characters long",
+                        MAX_MESSAGE_SIZE
+                    );
+                    continue;
+                }
+                if stream.write(message.as_bytes()).is_err() || stream.flush().is_err() {
+                    eprintln!("Failed to send message");
+                    return;
+                }
                 continue;
             }
 
-            let message = &trimmed["send all ".len()..];
+            if trimmed.starts_with("send ") {
+                // send <username> <message>
+                let rest = &trimmed["send ".len()..];
+                let parts: Vec<&str> = rest.splitn(2, ' ').collect();
+                match parts.as_slice() {
+                    [target, message] => {
+                        if message.is_empty() {
+                            eprintln!("Message cannot be empty");
+                            continue;
+                        }
+                        if message.len() > MAX_MESSAGE_SIZE {
+                            eprintln!(
+                                "Message must be at most {} characters long",
+                                MAX_MESSAGE_SIZE
+                            );
+                            continue;
+                        }
+                        // we send with @ for routing purposes
+                        let pm = format!("@{} {}\n", target, message);
+                        if stream.write(pm.as_bytes()).is_err() || stream.flush().is_err() {
+                            eprintln!("Failed to send message");
+                            return;
+                        }
+                        println!("{} (to {}): {}", logged_in_user, target, message);
+                    }
 
-            if message.is_empty() {
-                eprintln!("Message cannot be empty");
+                    _ => {
+                        eprintln!("Usage: send <username> <message>");
+                        continue;
+                    }
+                }
                 continue;
             }
 
-            if message.len() > MAX_MESSAGE_SIZE {
-                eprintln!(
-                    "Message must be at most {} characters long",
-                    MAX_MESSAGE_SIZE
-                );
-                continue;
-            }
-
-            if stream.write(message.as_bytes()).is_err() || stream.flush().is_err() {
-                eprintln!("Failed to send message");
-                return;
-            }
+            std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
         }
-
-        std::thread::sleep(std::time::Duration::from_millis(10)); // avoid busy waiting
     }
 }
-
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     match args
