@@ -1,4 +1,14 @@
 // Dan Sparks
+// CS4850
+// 3-20-26
+/**
+ *  Chat Service in Rust
+ * =======================
+ *  This program allows you chat with a server
+ *  Uses a textfile for tracking created users
+ *  
+ *  supports both TCP and Unix sockets
+ */
 
 use std::{
     collections::HashMap,
@@ -9,8 +19,6 @@ use std::{
         fd::AsRawFd,
         unix::net::{self, UnixListener, UnixStream},
     },
-    sync::{Arc, Mutex},
-    thread,
 };
 
 const PORT: u16 = 13952;
