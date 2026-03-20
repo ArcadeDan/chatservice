@@ -270,8 +270,6 @@ fn run_host() {
                     }
                 }
 
-
-
                 // THIS WHOLE BLOCK EXISTS BECAUSE OF THE BORROW CHECKER.
                 if !who_requests.is_empty() {
                     let names: Vec<&str> = clients.iter().map(|c| c.username.as_str()).collect();
@@ -532,12 +530,12 @@ fn run_client(mut stream: Client) {
                 continue;
             }
 
-            if !trimmed.starts_with("send") {
-                eprintln!("Usage: send <message>");
+            if !trimmed.starts_with("send all") {
+                eprintln!("Usage: send all <message>");
                 continue;
             }
 
-            let message = &trimmed["send ".len()..];
+            let message = &trimmed["send all ".len()..];
 
             if message.is_empty() {
                 eprintln!("Message cannot be empty");
