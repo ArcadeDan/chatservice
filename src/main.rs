@@ -229,6 +229,7 @@ fn run_host() {
         loop {
             let mut messages: Vec<String> = Vec::new();
             let mut disconnected: Vec<usize> = Vec::new();
+            let mut who_requests: Vec<usize> = Vec::new(); // track who request "who" to get past borrow checker
 
             {
                 let mut clients = clients_clone.lock().unwrap();
@@ -251,6 +252,8 @@ fn run_host() {
                                 println!("{} logout.", client.username);
                                 messages.push(msg);
                                 disconnected.push(i);
+                            } else if text == "who" {
+                                who_requests.push(i);
                             } else {
                                 let msg = format!("{}: {}", client.username, text);
                                 println!("{}", msg);
@@ -264,6 +267,18 @@ fn run_host() {
                             messages.push(msg);
                             disconnected.push(i);
                         }
+                    }
+                }
+
+
+
+                // THIS WHOLE BLOCK EXISTS BECAUSE OF THE BORROW CHECKER.
+                if !who_requests.is_empty() {
+                    let names: Vec<&str> = clients.iter().map(|c| c.username.as_str()).collect();
+                    let response = format!("{}\n", names.join(", "));
+                    for &i in &who_requests {
+                        let _ = clients[i].stream.write(response.as_bytes());
+                        let _ = clients[i].stream.flush();
                     }
                 }
 
@@ -507,6 +522,14 @@ fn run_client(mut stream: Client) {
                 let _ = stream.flush();
                 println!("{} left.", logged_in_user);
                 return;
+            }
+
+            if trimmed == "who" {
+                if stream.write(b"who").is_err() || stream.flush().is_err() {
+                    eprintln!("Failed to send command to server");
+                    return;
+                }
+                continue;
             }
 
             if !trimmed.starts_with("send") {
